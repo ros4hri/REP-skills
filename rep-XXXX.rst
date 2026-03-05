@@ -28,6 +28,10 @@ thereby enabling interoperability across robots and facilitating both
 high-level documentation of a robot's capabilities, as well as AI-based task
 planning and decision-making.
 
+Copyright
+=========
+
+This document has been placed in the public domain.
 
 Specification
 =============
@@ -60,29 +64,33 @@ robot capabilities:
    own ``package.xml``.  This explicit declaration enables tooling
    to discover all available implementations of a given skill,
    supporting interoperability and substitutability across vendors.
+   Skills may be *hierarchical*: a skill implementation may itself
+   invoke other skills to carry out its work.  For example, a
+   ``navigate`` skill might internally call a ``navigate_to_pose``
+   skill, or a ``grasp`` skill might rely on
+   ``execute_cartesian_trajectory``.
 
 3. **Skill message types** define the ROS 2 interface data types
    (actions, services, or messages) used by each skill.  These
    types are defined alongside the skill definitions, within the
    same skill definition package.
 
-   To enable *generic* skill controllers and executors -- i.e.,
-   nodes that can invoke and monitor any skill without
-   skill-specific code -- all skill interface types MUST include
-   the following fields from the ``std_skills`` package
-   [#std-skills]_:
+   To enable runtime introspection and generic skill controllers and executors
+   -- i.e., nodes that can invoke and monitor any skill without skill-specific
+   code -- all skill interface types MUST include the following fields from the
+   ``std_skills`` package [#std-skills]_:
 
-   - ``std_skills/Meta meta`` -- present in the **goal** (for
-     actions), the **request** (for services), and the **message**
+   - ``std_skills/Meta meta`` -- present in the goal (for
+     actions), the request (for services), and the message
      (for topics).  Contains metadata common to all skill
      invocations, such as priority and requester identity.
 
-   - ``std_skills/Result result`` -- present in the **result** of
-     actions and the **response** of services.  Provides a
+   - ``std_skills/Result result`` -- present in the result of
+     actions and the response of services.  Provides a
      uniform way to report success, failure, and error codes.
 
    - ``std_skills/Feedback feedback`` -- present in the
-     **feedback** of actions.  Provides uniform progress
+     feedback of actions.  Provides uniform progress
      reporting.
 
    By mandating these common fields, any skill -- regardless of
@@ -93,13 +101,57 @@ robot capabilities:
 Skill Definition Manifest
 --------------------------
 
-A skill is defined by a YAML manifest embedded in the ``<export>``
-section of a ``package.xml`` file (format 3, as specified in
-REP 149 [#rep149]_).  The manifest is wrapped in a ``<skill>`` XML
-element with the attribute ``content-type="yaml"``.
+A skill is defined by a manifest written in YAML or JSON,
+associated with a ``<skill>`` element in the ``<export>`` section
+of a ``package.xml`` file (format 3, as specified in
+REP 149 [#rep149]_).
 
-A single ``package.xml`` MAY contain multiple ``<skill>`` elements,
-each defining a distinct skill.
+The manifest can be provided in two ways:
+
+1. **Inline:** The manifest content is placed directly inside the
+   ``<skill>`` element, with a ``content-type`` attribute set to
+   ``"yaml"`` or ``"json"``:
+
+   .. code-block:: xml
+
+       <skill content-type="yaml">
+         id: navigate_to_pose
+         version: 1.0.0
+         # ...
+       </skill>
+
+   .. note::
+
+       If the inline YAML or JSON content contains XML reserved
+       characters (such as ``&`` or ``<``),
+       these characters MUST either be escaped using standard XML
+       entities (e.g., ``&amp;``, ``&lt;``) or the entire content
+       MUST be wrapped in a ``CDATA`` section:
+
+       .. code-block:: xml
+
+           <skill content-type="yaml"><![CDATA[
+             id: my_skill
+             description: |
+               Uses <special> & "reserved" characters.
+           ]]></skill>
+
+2. **External file:** The manifest is stored in a separate file
+   (e.g., ``navigate_to_pose-manifest.yml`` or
+   ``navigate_to_pose-manifest.json``), and the ``<skill>``
+   element references it via a ``src`` attribute:
+
+   .. code-block:: xml
+
+       <skill content-type="yaml" src="navigate_to_pose-manifest.yml" />
+
+   The file path is relative to the directory containing the
+   ``package.xml``.  The file format (YAML or JSON) is inferred
+   from the file extension (``.yml``/``.yaml`` for YAML, ``.json``
+   for JSON).
+
+A single ``package.xml`` MAY contain multiple ``<skill>`` elements
+(inline, external, or mixed), each defining a distinct skill.
 
 The YAML manifest MUST contain the following fields:
 
@@ -120,20 +172,20 @@ The YAML manifest MUST contain the following fields:
     The ROS 2 communication pattern used by the skill.  MUST be
     one of: ``action``, ``service``, or ``topic``.
 
+``datatype``
+    The fully qualified ROS 2 interface type (e.g.,
+    ``navigation_skills/action/NavigateToPose.action``).
+
+The manifest MAY additionally contain:
+
 ``default_interface_path``
     The default ROS 2 name (topic/action/service path) under which
     the skill is expected to be exposed.  Implementations MAY remap
     this path.  The convention is ``/skill/<skill_id>``.
 
-``datatype``
-    The fully qualified ROS 2 interface type (e.g.,
-    ``navigation_skills/action/NavigateToPose.action``).
-
 ``functional_domains``
     A list of one or more domains to which the skill belongs.
     See `Domain Taxonomy`_ below.
-
-The manifest MAY additionally contain:
 
 ``parameters``
     A mapping with an ``in`` key containing a list of input parameter
@@ -141,13 +193,13 @@ The manifest MAY additionally contain:
 
     ``name``
         The parameter name.  Dot-separated names (e.g.,
-        ``meta.priority``) indicate hierarchical grouping.
+        ``meta.priority``) indicate sub-messages.
 
     ``type``
         The parameter type.  This can be a primitive type
         (``boolean``, ``integer``, ``float``, ``string``), or a
         reference to a ROS 2 message type using the notation
-        ``:msg:`package/msg/Type```.
+        ``package/msg/Type``.
 
     ``required``
         A boolean indicating whether the parameter is mandatory.
@@ -188,7 +240,7 @@ in a ``package.xml``:
         parameters:
           in:
             - name: target_pose
-              type: :msg:`geometry_msgs/msg/PoseStamped`
+              type: geometry_msgs/msg/PoseStamped
               required: true
               description: |
                 The target pose to navigate to, in the
@@ -267,15 +319,20 @@ Skills are organised into *functional domains*.  A domain groups
 related skills that address a common area of robot functionality.
 The initial set of domains is:
 
-=================  =============================================
-Domain             Description
-=================  =============================================
-``communication``  Speech, dialogue, and language interaction
-``interaction``    Non-verbal interaction (gaze, gestures, LEDs)
-``manipulation``   Grasping, placing, and object handling
-``motions``        Joint and Cartesian trajectory execution
-``navigation``     Autonomous mobility and localisation
-=================  =============================================
+===================  ================================================
+Domain               Description
+===================  ================================================
+``communication``    Speech, dialogue, and language interaction
+``interaction``      Non-verbal interaction (gaze, gestures, LEDs)
+``manipulation``     Grasping, placing, and object handling
+``management``       System and resource management
+``motions``          Joint and Cartesian trajectory execution
+``navigation``       Autonomous mobility and localisation
+``reasoning``        Inference, planning, and decision-making
+``UI``               User interface elements and displays
+``external_bridge``  Bridging to external systems and services
+``other``            Skills that do not fit into any other domain
+===================  ================================================
 
 Each domain corresponds to a dedicated ROS 2 package that contains
 the skill definitions belonging to that domain (e.g.,
@@ -325,6 +382,7 @@ catalogue is available at [#skills-json]_.
   trajectory.
 - ``execute_cartesian_trajectory`` -- Execute a Cartesian-space
   trajectory.
+- ``replay_motion`` -- Execute a pre-recorded joint-space trajectory.
 
 **Navigation:**
 
@@ -334,6 +392,24 @@ catalogue is available at [#skills-json]_.
 - ``navigate_to_waypoint`` -- Navigate toward a named waypoint.
 - ``navigate_to_zone`` -- Navigate toward a named zone.
 
+Relation to resource management and skill scheduling
+''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The skill framework -- and in particular the ``std_skills/Meta``
+field included in every skill invocation -- is designed to carry
+metadata that can support resource management and action
+scheduling.  For instance, the ``meta.priority`` field allows a
+skill executor to arbitrate between concurrent skill requests, and
+future extensions to ``Meta`` could convey resource requirements,
+deadlines, or pre-emption policies.
+
+However, the design of such a resource manager or action scheduler
+is out of scope for this REP.  This REP focuses
+solely on defining the skill manifest format, the declaration and
+discovery mechanism, and the common message structure.  How a robot
+controller uses these declarations to allocate resources, resolve
+conflicts, or sequence actions is left to higher-level frameworks
+and is a potential subject for a future REP.
 
 Proposing New Skills and Domains
 ''''''''''''''''''''''''''''''''
@@ -419,13 +495,6 @@ definitions require no new file format, no new parser, and no new
 build system integration beyond what already exists.  The
 ``<export>`` section is explicitly designed for such extensions.
 
-**Why YAML inside XML?**  YAML provides a concise, human-friendly
-syntax for structured data.  Embedding it inside the ``<skill>``
-element avoids the verbosity of expressing deeply nested parameter
-trees in XML attributes or child elements, while remaining
-parseable by standard XML tools (the YAML content is simply the
-text content of the ``<skill>`` element).
-
 **Why a domain taxonomy?**  Organising skills into domains serves
 two purposes: it provides a navigable structure for human users
 browsing the skill catalogue, and it enables coarse-grained
@@ -500,28 +569,6 @@ The OSRF capabilities package demonstrated the value of a
 capability abstraction layer and can be considered an important
 predecessor to this proposal.
 
-
-Alternatives Considered
------------------------
-
-**Standalone YAML files:**  An earlier design used standalone
-``.yaml`` files alongside ``package.xml``.  This was rejected
-because it introduces an additional file that must be kept in sync,
-adds complexity to the build system, and requires custom tooling
-for discovery.
-
-**ROS 2 parameters for skill metadata:**  Using the ROS 2 parameter
-server to advertise skill metadata at run time was considered.
-This approach was rejected because it conflates build-time metadata
-(what a package *defines*) with run-time state, and it cannot be
-used for static analysis or build-farm validation.
-
-**A central skill registry:**  A centralised online registry (akin
-to a package index) was considered.  This was deemed premature for
-an initial proposal and could be layered on top of the
-``package.xml``-based approach in the future.
-
-
 Backwards Compatibility
 ========================
 
@@ -542,6 +589,8 @@ behaviour.
   move_base actions, MoveIt planning interfaces) are not affected.
   They can optionally adopt the skill framework by adding the
   appropriate manifest and ``<implements>`` tags.
+  If the maintainers of these packages do not wish to adopt the skill
+  interface directly, writing a thin adapter layer is easy.
 
 
 Reference Implementation
@@ -555,12 +604,12 @@ following components:
    providing skill definitions and their associated ROS 2
    interface types, organised by domain:
 
+   - ``std_skills`` (common base types) [#std-skills]_
    - ``communication_skills`` [#comm-skills]_
    - ``interaction_skills`` [#int-skills]_
    - ``manipulation_skills`` [#manip-skills]_
    - ``motions_skills`` [#motion-skills]_
    - ``navigation_skills`` [#nav-skills]_
-   - ``std_skills`` (common base types) [#std-skills]_
 
 2. **Validation schema:**  The ``architecture_schemas`` package
    [#arch-schemas]_ containing the JSON Schema for skill manifests.
@@ -625,12 +674,6 @@ References
 .. [#osrf-capabilities] OSRF Capabilities -- ROS 1 capability
    declaration and management
    (https://github.com/osrf/capabilities)
-
-
-Copyright
-=========
-
-This document has been placed in the public domain.
 
 
 ..
